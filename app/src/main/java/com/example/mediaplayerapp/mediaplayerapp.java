@@ -24,6 +24,9 @@ import java.util.Random;
 import com.example.mediaplayerapp.R;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import androidx.palette.graphics.Palette;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.Color;
 
 public class mediaplayerapp extends AppCompatActivity {
     private MediaPlayer mediaPlayer;
