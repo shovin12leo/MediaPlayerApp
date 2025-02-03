@@ -27,6 +27,7 @@ import android.graphics.BitmapFactory;
 import androidx.palette.graphics.Palette;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.Color;
+import android.view.View;
 
 public class mediaplayerapp extends AppCompatActivity {
     private MediaPlayer mediaPlayer;
@@ -257,9 +258,49 @@ public class mediaplayerapp extends AppCompatActivity {
             if (albumArtBytes != null) {
                 Bitmap bitmap = BitmapFactory.decodeByteArray(albumArtBytes, 0, albumArtBytes.length);
                 albumArt.setImageBitmap(bitmap);
+                
+                // Generate palette from album art
+                Palette.from(bitmap).generate(new Palette.PaletteAsyncListener() {
+                    @Override
+                    public void onGenerated(@Nullable Palette palette) {
+                        if (palette != null) {
+                            // Get the vibrant color (usually looks better than dominant)
+                            int backgroundColor = palette.getDominantColor(
+                                getResources().getColor(android.R.color.white)
+                            );
+                            
+                            // Create a gradient background
+                            GradientDrawable gradientDrawable = new GradientDrawable(
+                                GradientDrawable.Orientation.TOP_BOTTOM,
+                                new int[] {
+                                    adjustAlpha(backgroundColor, 0.8f),
+                                    adjustAlpha(backgroundColor, 0.3f)
+                                }
+                            );
+                            
+                            // Get the root layout
+                            View rootLayout = findViewById(R.id.root_layout);
+                            
+                            // Apply the gradient with animation
+                            runOnUiThread(() -> {
+                                rootLayout.setBackground(gradientDrawable);
+                                
+                                // Adjust text colors for better visibility
+                                int textColor = isColorDark(backgroundColor) ? 
+                                    Color.WHITE : Color.BLACK;
+                                songInfoText.setTextColor(textColor);
+                                durationText.setTextColor(textColor);
+                            });
+                        }
+                    }
+                });
             } else {
-                // Set default music icon if no album art
+                // Reset to default white background if no album art
                 albumArt.setImageResource(R.drawable.ic_music_note);
+                View rootLayout = findViewById(R.id.root_layout);
+                rootLayout.setBackgroundColor(Color.WHITE);
+                songInfoText.setTextColor(Color.BLACK);
+                durationText.setTextColor(Color.BLACK);
             }
             
             // Update song info text
@@ -273,9 +314,15 @@ public class mediaplayerapp extends AppCompatActivity {
             
             retriever.release();
         } catch (Exception e) {
+            e.printStackTrace();
+            // Reset to default if there's an error
             songInfoText.setText("File: " + songUri.getLastPathSegment() + "\n" +
                                "Song " + (currentSongIndex + 1) + " of " + songsList.size());
             albumArt.setImageResource(R.drawable.ic_music_note);
+            View rootLayout = findViewById(R.id.root_layout);
+            rootLayout.setBackgroundColor(Color.WHITE);
+            songInfoText.setTextColor(Color.BLACK);
+            durationText.setTextColor(Color.BLACK);
         }
     }
 
@@ -382,5 +429,17 @@ public class mediaplayerapp extends AppCompatActivity {
             e.printStackTrace();
             Toast.makeText(this, "Error restoring playback: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private boolean isColorDark(int color) {
+        return Color.red(color) * 0.299 + Color.green(color) * 0.587 + Color.blue(color) * 0.114 < 128;
+    }
+
+    private int adjustAlpha(int color, float factor) {
+        int alpha = Math.round(Color.alpha(color) * factor);
+        int red = Color.red(color);
+        int green = Color.green(color);
+        int blue = Color.blue(color);
+        return Color.argb(alpha, red, green, blue);
     }
 } 
