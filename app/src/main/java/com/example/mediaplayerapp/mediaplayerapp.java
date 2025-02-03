@@ -39,6 +39,8 @@ public class mediaplayerapp extends AppCompatActivity {
     private AudioManager audioManager;
     private ImageButton playButton;
     private ImageView albumArt;
+    private int currentPosition = 0;
+    private boolean wasPlaying = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -310,5 +312,72 @@ public class mediaplayerapp extends AppCompatActivity {
             mediaPlayer = null;
         }
         handler.removeCallbacksAndMessages(null);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        if (mediaPlayer != null) {
+            outState.putInt("currentPosition", mediaPlayer.getCurrentPosition());
+            outState.putBoolean("wasPlaying", mediaPlayer.isPlaying());
+            outState.putInt("currentSongIndex", currentSongIndex);
+            outState.putParcelableArrayList("songsList", songsList);
+            outState.putBoolean("isShuffleOn", isShuffleOn);
+            if (mediaPlayer.isLooping()) {
+                outState.putBoolean("isLooping", true);
+            }
+        }
+    }
+
+    @Override
+    protected void onRestoreInstanceState(Bundle savedInstanceState) {
+        super.onRestoreInstanceState(savedInstanceState);
+        if (savedInstanceState != null) {
+            currentPosition = savedInstanceState.getInt("currentPosition");
+            wasPlaying = savedInstanceState.getBoolean("wasPlaying");
+            currentSongIndex = savedInstanceState.getInt("currentSongIndex");
+            songsList = savedInstanceState.getParcelableArrayList("songsList");
+            isShuffleOn = savedInstanceState.getBoolean("isShuffleOn");
+            
+            if (!songsList.isEmpty()) {
+                Uri songUri = songsList.get(currentSongIndex);
+                initializeMediaPlayer(songUri, currentPosition, wasPlaying);
+                if (savedInstanceState.getBoolean("isLooping", false)) {
+                    mediaPlayer.setLooping(true);
+                }
+            }
+        }
+    }
+
+    private void initializeMediaPlayer(Uri songUri, int position, boolean shouldPlay) {
+        try {
+            if (mediaPlayer != null) {
+                mediaPlayer.release();
+            }
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(getApplicationContext(), songUri);
+            mediaPlayer.prepare();
+            mediaPlayer.seekTo(position);
+            
+            if (shouldPlay) {
+                mediaPlayer.start();
+                playButton.setImageResource(R.drawable.ic_pause);
+            } else {
+                playButton.setImageResource(R.drawable.ic_play);
+            }
+            
+            updateSongInfo(songUri);
+            seekBar.setMax(mediaPlayer.getDuration());
+            startSeekBarUpdate();
+            
+            mediaPlayer.setOnCompletionListener(mp -> {
+                if (!mediaPlayer.isLooping()) {
+                    playNextSong();
+                }
+            });
+        } catch (IOException e) {
+            e.printStackTrace();
+            Toast.makeText(this, "Error restoring playback: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
     }
 } 
