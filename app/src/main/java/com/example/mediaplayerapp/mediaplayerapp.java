@@ -28,6 +28,13 @@ import androidx.palette.graphics.Palette;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.Color;
 import android.view.View;
+import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.provider.MediaStore;
+import android.content.ClipData;
+import java.io.File;
+import java.util.HashSet;
+import java.util.Set;
 
 public class mediaplayerapp extends AppCompatActivity {
     private MediaPlayer mediaPlayer;
@@ -45,11 +52,21 @@ public class mediaplayerapp extends AppCompatActivity {
     private ImageView albumArt;
     private int currentPosition = 0;
     private boolean wasPlaying = false;
+    private static final String PREFS_NAME = "MediaPlayerPrefs";
+    private static final String LAST_SONGS_LIST = "LastSongsList";
+    private static final String LAST_SONG_INDEX = "LastSongIndex";
+    private static final String LAST_POSITION = "LastPosition";
+    private static final String LAST_FOLDER_PATH = "LastFolderPath";
+    private String lastFolderPath;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Load last folder path
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        lastFolderPath = prefs.getString(LAST_FOLDER_PATH, null);
 
         // Initialize AudioManager
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
@@ -63,6 +80,14 @@ public class mediaplayerapp extends AppCompatActivity {
         initializeViews();
         setupVolumeControl();
         setupClickListeners();
+
+        // If we have a saved folder path, open it automatically
+        if (lastFolderPath != null) {
+            openLastFolder();
+        }
+
+        // Load last session state
+        loadLastSessionState();
     }
 
     private void initializeViews() {
@@ -331,25 +356,41 @@ public class mediaplayerapp extends AppCompatActivity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == PICK_AUDIO_REQUEST && resultCode == RESULT_OK && data != null) {
             songsList.clear();
-            
+
+            // Handle multiple selection
             if (data.getClipData() != null) {
-                // Multiple files selected
-                int count = data.getClipData().getItemCount();
-                for (int i = 0; i < count; i++) {
-                    Uri audioUri = data.getClipData().getItemAt(i).getUri();
-                    songsList.add(audioUri);
+                ClipData clipData = data.getClipData();
+                for (int i = 0; i < clipData.getItemCount(); i++) {
+                    Uri uri = clipData.getItemAt(i).getUri();
+                    // Take permission for each URI
+                    try {
+                        getContentResolver().takePersistableUriPermission(
+                            uri, 
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        );
+                    } catch (SecurityException se) {
+                        // If we can't take persistent permission, we'll handle it during playback
+                    }
+                    songsList.add(uri);
                 }
-                Toast.makeText(this, count + " files selected", Toast.LENGTH_SHORT).show();
             } else if (data.getData() != null) {
-                // Single file selected
-                Uri audioUri = data.getData();
-                songsList.add(audioUri);
-                Toast.makeText(this, "1 file selected", Toast.LENGTH_SHORT).show();
+                Uri uri = data.getData();
+                // Take permission for single URI
+                try {
+                    getContentResolver().takePersistableUriPermission(
+                        uri, 
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    );
+                } catch (SecurityException se) {
+                    // If we can't take persistent permission, we'll handle it during playback
+                }
+                songsList.add(uri);
             }
-            
+
             if (!songsList.isEmpty()) {
                 currentSongIndex = 0;
                 playSong(songsList.get(currentSongIndex));
+                saveCurrentState();
             }
         }
     }
@@ -358,6 +399,7 @@ public class mediaplayerapp extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         if (mediaPlayer != null) {
+            saveCurrentState();
             mediaPlayer.release();
             mediaPlayer = null;
         }
@@ -405,7 +447,20 @@ public class mediaplayerapp extends AppCompatActivity {
                 mediaPlayer.release();
             }
             mediaPlayer = new MediaPlayer();
-            mediaPlayer.setDataSource(getApplicationContext(), songUri);
+            
+            // Set up the MediaPlayer with the URI
+            try {
+                mediaPlayer.setDataSource(getApplicationContext(), songUri);
+            } catch (SecurityException se) {
+                // If we can't access the URI directly, try to get a file path
+                String filePath = getRealPathFromURI(songUri);
+                if (filePath != null) {
+                    mediaPlayer.setDataSource(filePath);
+                } else {
+                    throw se;
+                }
+            }
+            
             mediaPlayer.prepare();
             mediaPlayer.seekTo(position);
             
@@ -425,10 +480,23 @@ public class mediaplayerapp extends AppCompatActivity {
                     playNextSong();
                 }
             });
-        } catch (IOException e) {
+        } catch (Exception e) {
             e.printStackTrace();
-            Toast.makeText(this, "Error restoring playback: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Error playing this file: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private String getRealPathFromURI(Uri contentUri) {
+        String[] proj = { MediaStore.Audio.Media.DATA };
+        try (Cursor cursor = getContentResolver().query(contentUri, proj, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int column_index = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA);
+                return cursor.getString(column_index);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
     }
 
     private boolean isColorDark(int color) {
@@ -441,5 +509,102 @@ public class mediaplayerapp extends AppCompatActivity {
         int green = Color.green(color);
         int blue = Color.blue(color);
         return Color.argb(alpha, red, green, blue);
+    }
+
+    private void openLastFolder() {
+        Uri folderUri = Uri.parse(lastFolderPath);
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.setDataAndType(folderUri, "audio/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        startActivityForResult(intent, PICK_AUDIO_REQUEST);
+    }
+
+    private String getPathFromUri(Uri uri) {
+        try {
+            if ("content".equalsIgnoreCase(uri.getScheme())) {
+                String[] projection = { MediaStore.MediaColumns.DATA };
+                Cursor cursor = null;
+
+                try {
+                    cursor = getContentResolver().query(uri, projection, null, null, null);
+                    if (cursor != null && cursor.moveToFirst()) {
+                        int columnIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA);
+                        String path = cursor.getString(columnIndex);
+                        return new File(path).getParent();
+                    }
+                } finally {
+                    if (cursor != null) {
+                        cursor.close();
+                    }
+                }
+            } else if ("file".equalsIgnoreCase(uri.getScheme())) {
+                return new File(uri.getPath()).getParent();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    private void loadLastSessionState() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        
+        // Load last songs list
+        Set<String> savedSongs = prefs.getStringSet(LAST_SONGS_LIST, null);
+        if (savedSongs != null && !savedSongs.isEmpty()) {
+            songsList.clear();
+            for (String uriString : savedSongs) {
+                try {
+                    Uri uri = Uri.parse(uriString);
+                    songsList.add(uri);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+            
+            // Load last song index and position
+            currentSongIndex = prefs.getInt(LAST_SONG_INDEX, 0);
+            int lastPosition = prefs.getInt(LAST_POSITION, 0);
+            
+            // Ensure index is within bounds
+            if (currentSongIndex >= songsList.size()) {
+                currentSongIndex = 0;
+            }
+            
+            // Play the last song from its last position
+            if (!songsList.isEmpty()) {
+                initializeMediaPlayer(songsList.get(currentSongIndex), lastPosition, false);
+            }
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        saveCurrentState();
+    }
+
+    private void saveCurrentState() {
+        if (mediaPlayer != null && !songsList.isEmpty()) {
+            SharedPreferences.Editor editor = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
+            
+            // Save songs list
+            Set<String> songsUriStrings = new HashSet<>();
+            for (Uri uri : songsList) {
+                songsUriStrings.add(uri.toString());
+            }
+            editor.putStringSet(LAST_SONGS_LIST, songsUriStrings);
+            
+            // Save current song index and position
+            editor.putInt(LAST_SONG_INDEX, currentSongIndex);
+            editor.putInt(LAST_POSITION, mediaPlayer.getCurrentPosition());
+            
+            // Save current folder path if available
+            if (lastFolderPath != null) {
+                editor.putString(LAST_FOLDER_PATH, lastFolderPath);
+            }
+            
+            editor.apply();
+        }
     }
 } 
